@@ -1,0 +1,58 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --agro-green: #2E7D32;
+  --agro-blue: #1565C0;
+  --agro-green-light: #4CAF50;
+  --agro-blue-light: #1976D2;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Inter', sans-serif;
+  }
+}
+
+@layer components {
+  .agro-gradient {
+    background: linear-gradient(135deg, var(--agro-green) 0%, var(--agro-blue) 100%);
+  }
+  
+  .agro-green {
+    color: var(--agro-green);
+  }
+  
+  .agro-blue {
+    color: var(--agro-blue);
+  }
+  
+  .bg-agro-green {
+    background-color: var(--agro-green);
+  }
+  
+  .bg-agro-blue {
+    background-color: var(--agro-blue);
+  }
+  
+  .border-agro-green {
+    border-color: var(--agro-green);
+  }
+  
+  .hover-agro-green:hover {
+    background-color: var(--agro-green-light);
+  }
+}
+
+/* Leaflet map styles */
+.leaflet-container {
+  height: 100%;
+  width: 100%;
+  border-radius: 8px;
+}
