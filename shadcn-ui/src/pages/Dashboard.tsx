@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import logo from '@/assets/logo.png'; 
+
 import { 
   Leaf, 
   MapPin, 
@@ -329,7 +331,7 @@ const Dashboard: React.FC = () => {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center py-6">
             <div className="flex items-center">
-              <Leaf className="h-8 w-8 text-green-600 mr-3" />
+              <img src={logo} alt="Logo AgriSentinel" className="h-16 w-16 mr-3" />              
               <div>
                 <h1 className="text-2xl font-bold text-gray-900">AgriSentinel</h1>
                 <p className="text-sm text-gray-500">Tableau de bord</p>
@@ -390,14 +392,7 @@ const Dashboard: React.FC = () => {
                   <TrendingUp className="h-6 w-6 mb-2" />
                   Voir mes parcelles
                 </Button>
-                <Button 
-                  variant="outline" 
-                  className="h-20 flex flex-col items-center justify-center"
-                  onClick={() => navigate('/lots/new')}
-                >
-                  <Package className="h-6 w-6 mb-2" />
-                  Créer un lot
-                </Button>
+                
                 <Button 
                   variant="outline" 
                   className="h-20 flex flex-col items-center justify-center"

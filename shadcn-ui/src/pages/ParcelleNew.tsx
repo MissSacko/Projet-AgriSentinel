@@ -230,11 +230,11 @@ const ParcelleNew: React.FC = () => {
           </Card>
 
           {/* Sizer */}
-          <Sizer
+          {/* <Sizer
             lat={lat}
             lon={lon}
             onPolygonGenerated={handlePolygonGenerated}
-          />
+          /> */}
         </div>
       </div>
     </div>
