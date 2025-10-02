@@ -1,9 +1,11 @@
 [build]
-  command = "npm run build"   # adapte à ton front
-  publish = "dist"            # "build" pour CRA, etc.
+  command = "npm run build"
+  publish = "dist"
+  functions = "netlify/functions"
 
+# Tout ce qui commence par /api/ va vers la Function "soil"
 [[redirects]]
   from = "/api/*"
-  to   = "https://apisent.netlify.app/.netlify/functions/api/:splat"
+  to = "/.netlify/functions/soil/:splat"
   status = 200
-  force  = true
+
