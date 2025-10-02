@@ -19,35 +19,42 @@ import L from 'leaflet';
 import * as turf from '@turf/turf';
 
 // ------------------------------
-// Types & Config
+// Types & Config (3 masques uniquement)
 // ------------------------------
-type ZoneClass = 'forest' | 'bare_soil' | 'crop' | 'water' | 'urban' | 'unknown';
+type ZoneClass = 'bare_soil' | 'crop' | 'forest' | 'unknown';
 
 type FeatureOverlay = {
   id: string;
   cls: ZoneClass;
-  // chemins (anneaux) au format Leaflet [lat, lng]
+  // anneaux (chaque anneau = tableau de lat/lng)
   paths: Array<Array<{ lat: number; lng: number }>>;
-  // GeoJSON d'origine pour la sauvegarde + surface
+  // GeoJSON d'origine
   feature: GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon>;
 };
 
 type JobStatus = 'queued' | 'running' | 'done' | 'failed';
 
-const USE_MOCK = true; // ← passe à false quand ton backend est prêt
+// 👉 FRONT -> API PYTHON
+const USE_MOCK = false; // mets à true si tu veux tester sans backend
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
 
+// N'afficher que ces 3 classes
+const ALLOWED: ZoneClass[] = ['bare_soil', 'crop', 'forest'];
+
+// Couleurs des 3 classes
 const classColors: Record<ZoneClass, string> = {
-  forest: '#2e7d32',
-  bare_soil: '#a1887f',
-  crop: '#558b2f',
-  water: '#1565c0',
-  urban: '#6d4c41',
+  bare_soil: '#D2B48C', // sol nu (tan)
+  crop: '#00A000',      // culture (vert)
+  forest: '#006400',    // forêt (vert foncé)
   unknown: '#9e9e9e'
 };
 
+const classLabel = (k: ZoneClass) =>
+  k === 'bare_soil' ? 'Sol nu' : k === 'crop' ? 'Culture' : k === 'forest' ? 'Forêt' : 'Inconnu';
+
 const defaultCenter = { lat: 5.3364, lng: -4.0267 }; // Côte d’Ivoire
 
-// Icône Leaflet par défaut (fix chemin assets)
+// Icône Leaflet par défaut
 const DefaultIcon = L.icon({
   iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
   iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
@@ -65,9 +72,7 @@ function FitBounds({ polygons }: { polygons: Array<Array<{ lat: number; lng: num
   React.useEffect(() => {
     if (!polygons?.length) return;
     const b = L.latLngBounds([]);
-    polygons.forEach(rings =>
-      rings.forEach(ring => ring.forEach(p => b.extend([p.lat, p.lng])))
-    );
+    polygons.forEach(rings => rings.forEach(ring => ring.forEach(p => b.extend([p.lat, p.lng]))));
     if (b.isValid()) map.fitBounds(b, { padding: [32, 32] });
   }, [polygons, map]);
   return null;
@@ -75,9 +80,7 @@ function FitBounds({ polygons }: { polygons: Array<Array<{ lat: number; lng: num
 
 function ClickToMoveCenter({ onMove }: { onMove: (lat: number, lng: number) => void }) {
   useMapEvents({
-    click(e) {
-      onMove(e.latlng.lat, e.latlng.lng);
-    }
+    click(e) { onMove(e.latlng.lat, e.latlng.lng); }
   });
   return null;
 }
@@ -115,7 +118,7 @@ const ParcelleNew: React.FC = () => {
   const onLoad = useCallback((map: L.Map) => (mapRef.current = map), []);
   const onUnmount = useCallback(() => { mapRef.current = null; }, []);
 
-  // ------------------- ✅ SOLUTION 1 : Géoloc + recentrage
+  // ✅ Géoloc + recentrage
   const getCurrentLocation = () => {
     if (!navigator.geolocation) {
       setError('Géolocalisation non supportée par votre navigateur.');
@@ -123,15 +126,9 @@ const ParcelleNew: React.FC = () => {
     }
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        const la = pos.coords.latitude;
-        const lo = pos.coords.longitude;
-        setLat(la);
-        setLon(lo);
-
-        // Recentrer la carte et zoomer
-        if (mapRef.current) {
-          mapRef.current.flyTo([la, lo], 17, { duration: 1 });
-        }
+        const la = pos.coords.latitude, lo = pos.coords.longitude;
+        setLat(la); setLon(lo);
+        if (mapRef.current) mapRef.current.flyTo([la, lo], 17, { duration: 1 });
       },
       (err) => {
         console.error(err);
@@ -146,81 +143,50 @@ const ParcelleNew: React.FC = () => {
     setCalculatedArea(areaHa);
   };
 
-  // ------------------- API (mock + vrai)
+  // ------------------- API (backend Python) -------------------
   async function startJobAPI(_lat: number, _lon: number, _radiusKm: number): Promise<{ jobId: string }> {
-    if (USE_MOCK) {
-      await sleep(400);
-      return { jobId: 'mock-job-1' };
-    }
-    const res = await fetch('/api/soil-segmentation', {
+    if (USE_MOCK) { return { jobId: 'mock' }; }
+    const res = await fetch(`${API_BASE}/api/soil-segmentation`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ lat: _lat, lng: _lon, radius_km: _radiusKm })
     });
-    if (!res.ok) throw new Error('Lancement analyse impossible');
+    if (!res.ok) throw new Error(await res.text());
     return res.json();
   }
 
   async function pollStatusAPI(jobId: string): Promise<JobStatus> {
-    if (USE_MOCK) {
-      await sleep(800);
-      setProgress((p) => Math.min(100, p + 25));
-      return progress >= 100 ? 'done' : 'running';
-    }
-    const res = await fetch(`/api/soil-segmentation/${jobId}/status`);
-    if (!res.ok) throw new Error('Erreur statut job');
+    if (USE_MOCK) { setProgress(100); return 'done'; }
+    const res = await fetch(`${API_BASE}/api/soil-segmentation/${encodeURIComponent(jobId)}/status`);
+    if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
-    if (typeof data.progress === 'number') setProgress(data.progress);
+    setProgress(data.progress ?? 100);
     return data.status as JobStatus;
   }
 
   async function getResultAPI(jobId: string): Promise<GeoJSON.FeatureCollection> {
-    if (USE_MOCK) {
-      // 3 polygones carrés en GeoJSON autour du centre
-      const mkSquare = (dxM: number, dyM: number, sizeM: number, cls: ZoneClass) => {
-        const toDeg = (m: number) => m / 111_320;
-        const dx = toDeg(dxM), dy = toDeg(dyM), d = toDeg(sizeM);
-        const ring = [
-          [lon + dx - d, lat + dy - d],
-          [lon + dx + d, lat + dy - d],
-          [lon + dx + d, lat + dy + d],
-          [lon + dx - d, lat + dy + d],
-          [lon + dx - d, lat + dy - d]
-        ];
-        return turf.polygon([ring], { class: cls });
-      };
-      await sleep(500);
-      return turf.featureCollection([
-        mkSquare(0, 0, 250, 'crop'),
-        mkSquare(400, 200, 220, 'forest'),
-        mkSquare(-350, -150, 200, 'bare_soil')
-      ]) as GeoJSON.FeatureCollection;
-    }
-    const res = await fetch(`/api/soil-segmentation/${jobId}/result`);
-    if (!res.ok) throw new Error('Résultat indisponible');
+    if (USE_MOCK) { return { type: 'FeatureCollection', features: [] } as any; }
+    const res = await fetch(`${API_BASE}/api/soil-segmentation/${encodeURIComponent(jobId)}/result`);
+    if (!res.ok) throw new Error(await res.text());
     return res.json();
   }
 
-  // ------------------- Conversion GeoJSON → Overlays Leaflet
+  // ------------------- Conversion GeoJSON → Overlays Leaflet (3 classes)
   function fcToOverlays(fc: GeoJSON.FeatureCollection): FeatureOverlay[] {
     const out: FeatureOverlay[] = [];
     for (const f of fc.features) {
       const cls = ((f.properties as any)?.class || 'unknown') as ZoneClass;
-      if (!f.geometry) continue;
+      if (!ALLOWED.includes(cls) || !f.geometry) continue; // ne garder que bare_soil/crop/forest
 
       const id = (f.id as string) || Math.random().toString(36).slice(2);
 
       if (f.geometry.type === 'Polygon') {
-        const poly = f.geometry.coordinates.map(ring =>
-          ring.map(([x, y]) => ({ lng: x, lat: y }))
-        );
+        const poly = f.geometry.coordinates.map(ring => ring.map(([x, y]) => ({ lng: x, lat: y })));
         out.push({ id, cls, paths: poly, feature: f as GeoJSON.Feature<GeoJSON.Polygon> });
       } else if (f.geometry.type === 'MultiPolygon') {
         const allRings: FeatureOverlay['paths'] = [];
         for (const poly of f.geometry.coordinates) {
-          for (const ring of poly) {
-            allRings.push(ring.map(([x, y]) => ({ lng: x, lat: y })));
-          }
+          for (const ring of poly) allRings.push(ring.map(([x, y]) => ({ lng: x, lat: y })));
         }
         out.push({ id, cls, paths: allRings, feature: f as GeoJSON.Feature<GeoJSON.MultiPolygon> });
       }
@@ -239,25 +205,22 @@ const ParcelleNew: React.FC = () => {
       const { jobId } = await startJobAPI(lat, lon, radiusKm);
       setStatus('running');
 
-      let s: JobStatus = 'running';
-      for (let i = 0; i < 30 && s !== 'done' && s !== 'failed'; i++) {
-        await sleep(1000);
-        s = await pollStatusAPI(jobId);
-        setStatus(s);
-      }
-      if (s !== 'done') throw new Error("Analyse non terminée");
+      const s = await pollStatusAPI(jobId);
+      if (s !== 'done') throw new Error('Analyse non terminée');
 
       const fc = await getResultAPI(jobId);
       const feats = fcToOverlays(fc);
       setOverlays(feats);
 
-      // Fit bounds
+      // Fit bounds sur les résultats
       const map = mapRef.current;
       if (map && feats.length) {
         const b = L.latLngBounds([]);
         feats.forEach(f => f.paths.forEach(r => r.forEach(pt => b.extend([pt.lat, pt.lng]))));
         if (b.isValid()) map.fitBounds(b, { padding: [32, 32] });
       }
+      setStatus('done');
+      setProgress(100);
     } catch (e: any) {
       console.error(e);
       setError(e.message || 'Erreur durant l’analyse.');
@@ -267,7 +230,7 @@ const ParcelleNew: React.FC = () => {
 
   // ------------------- Sélection d’un polygone (pour sauvegarde)
   const selectOverlay = (ov: FeatureOverlay) => {
-    // Convertit MultiPolygon -> Polygon (1er anneau) pour l’enregistrement simple
+    // MultiPolygon -> Polygon (on prend le premier anneau) pour simplifier l’enregistrement
     let poly: GeoJSON.Feature<GeoJSON.Polygon>;
     if (ov.feature.geometry.type === 'Polygon') {
       poly = ov.feature as GeoJSON.Feature<GeoJSON.Polygon>;
@@ -434,19 +397,19 @@ const ParcelleNew: React.FC = () => {
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <CardTitle>Carte & analyse</CardTitle>
-                  <CardDescription>Lance l’analyse puis clique sur un polygone pour le sélectionner.</CardDescription>
+                  <CardDescription>Analyse en 3 masques : sol nu, culture, forêt.</CardDescription>
                 </div>
                 <Button onClick={runAnalysis}>Analyser</Button>
               </div>
             </CardHeader>
 
             <CardContent className="space-y-4">
-              {/* Légende */}
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-sm">
-                {Object.entries(classColors).map(([k, c]) => (
+              {/* Légende (3 classes) */}
+              <div className="grid grid-cols-3 gap-2 text-sm">
+                {(['bare_soil','crop','forest'] as ZoneClass[]).map((k) => (
                   <div key={k} className="flex items-center gap-2">
-                    <span className="inline-block w-4 h-4 rounded" style={{ background: c, opacity: 0.6 }} />
-                    <span className="capitalize">{k.replace('_', ' ')}</span>
+                    <span className="inline-block w-4 h-4 rounded" style={{ background: classColors[k], opacity: 0.6 }} />
+                    <span>{classLabel(k)}</span>
                   </div>
                 ))}
               </div>
@@ -454,7 +417,8 @@ const ParcelleNew: React.FC = () => {
               {/* Carte */}
               <div className="h-[520px] w-full rounded-xl overflow-hidden border">
                 <MapContainer
-                  whenCreated={onLoad}
+                  whenCreated={(m) => (mapRef.current = m)}
+                  onUnmount={() => (mapRef.current = null)}
                   style={{ width: '100%', height: '100%' }}
                   center={[center.lat, center.lng]}
                   zoom={14}
@@ -463,7 +427,7 @@ const ParcelleNew: React.FC = () => {
                   {/* Satellite gratuit Esri */}
                   <TileLayer
                     url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
-                    attribution='&copy; <a href="https://www.esri.com/">Esri</a>, Earthstar Geographics'
+                    attribution='&copy; Esri, Earthstar Geographics'
                   />
 
                   <ClickToMoveCenter onMove={(la, lo) => { setLat(la); setLon(lo); }} />
