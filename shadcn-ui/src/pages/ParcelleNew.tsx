@@ -398,7 +398,7 @@ const ParcelleNew: React.FC = () => {
                       <Input id="lat" type="number" step="any" value={lat} onChange={(e) => setLat(parseFloat(e.target.value))} required />
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="lon">Longitude</Label>
+                      <Label htmlFor="lon">Lonitude</Label>
                       <Input id="lon" type="number" step="any" value={lon} onChange={(e) => setLon(parseFloat(e.target.value))} required />
                     </div>
                   </div>
