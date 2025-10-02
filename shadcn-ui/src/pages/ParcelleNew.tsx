@@ -38,6 +38,7 @@ type JobStatus = 'queued' | 'running' | 'done' | 'failed';
 const USE_MOCK = false;
 const API_BASE = (import.meta.env.VITE_API_BASE as string) || '/api';
 
+
 // Helper pour construire les URLs d’API proprement, quel que soit API_BASE
 function apiUrl(path: string) {
   const base = API_BASE.endsWith('/') ? API_BASE.slice(0, -1) : API_BASE;
