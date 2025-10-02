@@ -3,9 +3,15 @@
   publish = "dist"
   functions = "netlify/functions"
 
-# Tout ce qui commence par /api/ va vers la Function "soil"
+# ✅ PRIORITÉ: l'API d'abord
 [[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/soil/:splat"
   status = 200
+  force = true
 
+# ✅ SPA fallback ensuite
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
