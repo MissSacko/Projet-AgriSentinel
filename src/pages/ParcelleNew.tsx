@@ -14,11 +14,48 @@ import { ArrowLeft, MapPin, Save } from 'lucide-react';
 
 import Sizer from '@/components/Sizer';
 
+// -------------------- Types API --------------------
 type AgroClass = 'bare_soil' | 'crop' | 'forest';
 type AgroProps = { class: AgroClass };
 type AgroFC = GeoJSON.FeatureCollection<GeoJSON.Geometry, AgroProps>;
 
-const API_BASE = import.meta.env.VITE_AGRO_API ?? '';
+// URL API (sans slash final)
+const API_BASE = (import.meta.env.VITE_AGRO_API || '').replace(/\/+$/, '');
+
+// -------------------- Utils --------------------
+async function fetchJson<T = any>(
+  url: string,
+  options: RequestInit = {},
+  timeoutMs = 20000
+): Promise<T> {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, { ...options, signal: controller.signal, mode: 'cors' });
+    const text = await resp.text();
+    // essaie json si possible
+    const maybeJson = (() => { try { return JSON.parse(text); } catch { return text; }})();
+
+    if (!resp.ok) {
+      const msg = typeof maybeJson === 'string'
+        ? `HTTP ${resp.status} – ${maybeJson || 'Erreur'}`
+        : `HTTP ${resp.status} – ${JSON.stringify(maybeJson, null, 2)}`;
+      throw new Error(msg);
+    }
+    return (typeof maybeJson === 'string' ? (text as unknown as T) : (maybeJson as T));
+  } catch (e: any) {
+    if (e?.name === 'AbortError') {
+      throw new Error(`Timeout (${timeoutMs} ms) sur ${url}`);
+    }
+    // Message clair pour CORS / DNS / HTTPS mixé
+    const hint =
+      `\nAstuce: vérifie l'URL (${API_BASE}), le HTTPS, les en-têtes CORS côté API, ` +
+      `et qu'il n'y a pas de double "//" dans l'URL.`;
+    throw new Error(`${e?.message || e}${hint}`);
+  } finally {
+    clearTimeout(id);
+  }
+}
 
 const ParcelleNew: React.FC = () => {
   const navigate = useNavigate();
@@ -47,6 +84,7 @@ const ParcelleNew: React.FC = () => {
   const [apiError, setApiError] = useState<string>('');
   const [segmentationFc, setSegmentationFc] = useState<AgroFC | null>(null);
 
+  // -------------------- Geoloc --------------------
   const getCurrentLocation = () => {
     if (!navigator.geolocation) {
       setError('Géolocalisation non supportée par votre navigateur.');
@@ -58,61 +96,61 @@ const ParcelleNew: React.FC = () => {
     );
   };
 
+  // -------------------- Sizer callback --------------------
   const handlePolygonGenerated = (polygon: GeoJSON.Feature<GeoJSON.Polygon>, areaHa: number) => {
     setGeneratedPolygon(polygon);
     setCalculatedArea(areaHa);
   };
 
-  // === API AgroSentinel ===
+  // -------------------- Appel API AgroSentinel --------------------
   const runSegmentation = async () => {
     setApiError('');
     setSegmentationFc(null);
 
+    // validations rapides évitent erreurs bêtes
     if (!API_BASE) {
-      setApiError("URL d'API manquante. Définis VITE_AGRO_API dans le fichier .env");
+      setApiError("URL d'API manquante. Définis VITE_AGRO_API dans le fichier .env (sans slash final).");
+      return;
+    }
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      setApiError('Coordonnées invalides.');
       return;
     }
 
     setApiLoading(true);
     try {
-      // 1) POST /start
-      const startResp = await fetch(`${API_BASE}/api/soil-segmentation`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', accept: 'application/json' },
-        body: JSON.stringify({ lat, lng: lon, radius_km: radiusKm }),
-      });
+      // 1) POST start -> jobId
+      const startData = await fetchJson<{ jobId: string }>(
+        `${API_BASE}/api/soil-segmentation`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', accept: 'application/json' },
+          body: JSON.stringify({ lat, lng: lon, radius_km: radiusKm }),
+        },
+        25000
+      );
 
-      if (!startResp.ok) {
-        const text = await startResp.text();
-        try { setApiError(`Erreur (start): ${JSON.stringify(JSON.parse(text), null, 2)}`); }
-        catch { setApiError(`Erreur (start ${startResp.status}): ${text}`); }
-        return;
-      }
-      const { jobId } = await startResp.json();
+      // 2) GET result
+      const jobId = encodeURIComponent(startData.jobId);
+      const fc = await fetchJson<AgroFC>(
+        `${API_BASE}/api/soil-segmentation/${jobId}/result`,
+        { headers: { accept: 'application/json' } },
+        30000
+      );
 
-      // 2) GET /result
-      const resResp = await fetch(`${API_BASE}/api/soil-segmentation/${encodeURIComponent(jobId)}/result`, {
-        headers: { accept: 'application/json' },
-      });
-      if (!resResp.ok) {
-        const text = await resResp.text();
-        try { setApiError(`Erreur (result): ${JSON.stringify(JSON.parse(text), null, 2)}`); }
-        catch { setApiError(`Erreur (result ${resResp.status}): ${text}`); }
-        return;
-      }
-      const fc: AgroFC = await resResp.json();
       setSegmentationFc(fc);
     } catch (e: any) {
-      setApiError(`Erreur réseau: ${e?.message || e}`);
+      setApiError(e?.message || String(e));
     } finally {
       setApiLoading(false);
     }
   };
 
-  // === Enregistrement Firestore ===
+  // -------------------- Enregistrement Firestore --------------------
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user || !generatedPolygon) return;
+    if (!user) { setError('Utilisateur non connecté.'); return; }
+    if (!generatedPolygon) { setError('Aucun polygone de parcelle généré.'); return; }
 
     setLoading(true);
     setError('');
@@ -122,13 +160,13 @@ const ParcelleNew: React.FC = () => {
         name, culture, annee, densite,
         geomGeoJSON: generatedPolygon,
         surfaceHa: calculatedArea,
-        segmentation: segmentationFc, // optionnel: stocke la couche
+        segmentation: segmentationFc ?? null, // ok si null
         lastRainDays: 5,
         zoneInterdite: false,
         createdAt: new Date().toISOString(),
       });
       navigate('/parcelles');
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
       setError('Erreur lors de la création de la parcelle.');
     } finally {
@@ -230,7 +268,9 @@ const ParcelleNew: React.FC = () => {
                   </div>
 
                   {apiError && (
-                    <Alert variant="destructive"><AlertDescription style={{whiteSpace:'pre-wrap'}}>{apiError}</AlertDescription></Alert>
+                    <Alert variant="destructive">
+                      <AlertDescription style={{whiteSpace:'pre-wrap'}}>{apiError}</AlertDescription>
+                    </Alert>
                   )}
 
                   {!!segmentationFc && (
@@ -239,7 +279,7 @@ const ParcelleNew: React.FC = () => {
                       <div>Features: {segmentationFc.features.length}</div>
                       <div>
                         Classes:&nbsp;
-                        {['bare_soil','crop','forest'].map(c => {
+                        {(['bare_soil','crop','forest'] as AgroClass[]).map(c => {
                           const n = segmentationFc.features.filter(f => f.properties?.class === c).length;
                           return <span key={c}>{c} ({n})&nbsp;</span>;
                         })}
