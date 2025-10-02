@@ -49,12 +49,9 @@ const defaultCenter = { lat: 5.3364, lng: -4.0267 }; // Côte d’Ivoire
 
 // Icône Leaflet par défaut (fix chemin assets)
 const DefaultIcon = L.icon({
-  iconUrl:
-    'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
-  iconRetinaUrl:
-    'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
-  shadowUrl:
-    'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+  iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
+  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
   iconSize: [25, 41],
   iconAnchor: [12, 41]
 });
@@ -118,7 +115,7 @@ const ParcelleNew: React.FC = () => {
   const onLoad = useCallback((map: L.Map) => (mapRef.current = map), []);
   const onUnmount = useCallback(() => { mapRef.current = null; }, []);
 
-  // ------------------- Géoloc navigateur
+  // ------------------- ✅ SOLUTION 1 : Géoloc + recentrage
   const getCurrentLocation = () => {
     if (!navigator.geolocation) {
       setError('Géolocalisation non supportée par votre navigateur.');
@@ -126,13 +123,21 @@ const ParcelleNew: React.FC = () => {
     }
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        setLat(pos.coords.latitude);
-        setLon(pos.coords.longitude);
+        const la = pos.coords.latitude;
+        const lo = pos.coords.longitude;
+        setLat(la);
+        setLon(lo);
+
+        // Recentrer la carte et zoomer
+        if (mapRef.current) {
+          mapRef.current.flyTo([la, lo], 17, { duration: 1 });
+        }
       },
       (err) => {
         console.error(err);
-        setError('Impossible d\'obtenir votre position. Utilisez les coordonnées par défaut.');
-      }
+        setError("Impossible d'obtenir votre position. Utilisez les coordonnées par défaut.");
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
     );
   };
 
@@ -240,7 +245,7 @@ const ParcelleNew: React.FC = () => {
         s = await pollStatusAPI(jobId);
         setStatus(s);
       }
-      if (s !== 'done') throw new Error('Analyse non terminée');
+      if (s !== 'done') throw new Error("Analyse non terminée");
 
       const fc = await getResultAPI(jobId);
       const feats = fcToOverlays(fc);
@@ -460,12 +465,6 @@ const ParcelleNew: React.FC = () => {
                     url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
                     attribution='&copy; <a href="https://www.esri.com/">Esri</a>, Earthstar Geographics'
                   />
-                  {/* (Optionnel) couche de labels : */}
-                  {/* <TileLayer
-                    url="https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}"
-                    attribution="&copy; Esri"
-                    opacity={0.9}
-                  /> */}
 
                   <ClickToMoveCenter onMove={(la, lo) => { setLat(la); setLon(lo); }} />
 
