@@ -12,7 +12,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Progress } from '@/components/ui/progress';
-import { ArrowLeft, MapPin, Save } from 'lucide-react';
+import { ArrowLeft, MapPin, Save, Globe } from 'lucide-react';
 
 import { MapContainer, TileLayer, Marker, Circle, Polygon, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
@@ -26,23 +26,18 @@ type ZoneClass = 'bare_soil' | 'crop' | 'forest' | 'unknown';
 type FeatureOverlay = {
   id: string;
   cls: ZoneClass;
-  paths: Array<Array<{ lat: number; lng: number }>>; // anneaux (chaque anneau = tableau de lat/lng)
-  feature: GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon>; // GeoJSON d'origine
+  paths: Array<Array<{ lat: number; lng: number }>>; // anneaux
+  feature: GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon>;
 };
 
 type JobStatus = 'queued' | 'running' | 'done' | 'failed';
 
-// 👉 Mode API
-// - Par défaut le front appelle "/api" (Netlify Functions via netlify.toml)
-// - Pour contourner (tests directs sur FastAPI/Swagger), active USE_DIRECT_ABSOLUTE_BASE et mets DIRECT_ABSOLUTE_BASE
+// 👉 Mode API (reste inchangé)
 const USE_DIRECT_ABSOLUTE_BASE = true; // ← mets false quand Netlify Functions marche
-const DIRECT_ABSOLUTE_BASE = "https://TON-API"; // ← ex: https://agrosentinel-api.onrailway.app (SANS / final)
-
-// Alternative variable Vite (facultative)
+const DIRECT_ABSOLUTE_BASE = "https://TON-API"; // ex: https://agrosentinel-api.onrailway.app (SANS / final)
 const USE_MOCK = false;
 const API_BASE = (import.meta.env.VITE_API_BASE as string) || '/api';
 
-// Helper pour construire des URLs relatives sur /api
 function apiUrl(path: string) {
   const base = API_BASE.endsWith('/') ? API_BASE.slice(0, -1) : API_BASE;
   const p = path.startsWith('/') ? path : `/${path}`;
@@ -52,7 +47,7 @@ function apiUrl(path: string) {
 // N'afficher que ces 3 classes
 const ALLOWED: ZoneClass[] = ['bare_soil', 'crop', 'forest'];
 
-// Couleurs des 3 classes
+// Couleurs
 const classColors: Record<ZoneClass, string> = {
   bare_soil: '#D2B48C',
   crop: '#00A000',
@@ -75,9 +70,7 @@ const DefaultIcon = L.icon({
 });
 L.Marker.prototype.options.icon = DefaultIcon;
 
-// ------------------------------
-// Helpers Leaflet
-// ------------------------------
+// ------------------------------ Helpers Leaflet
 function FitBounds({ polygons }: { polygons: Array<Array<{ lat: number; lng: number }>>[] }) {
   const map = useMap();
   React.useEffect(() => {
@@ -97,7 +90,6 @@ function ClickToMoveCenter({ onMove }: { onMove: (lat: number, lng: number) => v
 }
 
 // ------------------------------ utils HTTP & flux "cURL"
-// fetch JSON avec erreurs explicites
 async function fetchJSON(url: string, init?: RequestInit) {
   const r = await fetch(url, {
     headers: { Accept: "application/json", ...(init?.headers || {}) },
@@ -137,7 +129,6 @@ async function runSoilJobCurlFlow(lat: number, lng: number, radiusKm: number) {
   let tries = 0;
   while (tries < 120) { // ~3 minutes si 1.5s d'intervalle
     const s = await fetchJSON(statusUrl);
-    console.log(`⌛ status=${s?.status} progress=${Math.round(s?.progress ?? 0)}%`);
     if (s?.status === "done") break;
     if (s?.status === "failed") throw new Error("Job échoué côté API");
     await sleep(1500);
@@ -160,9 +151,21 @@ function downloadJSON(obj: any, filename = "result.geojson") {
   URL.revokeObjectURL(url);
 }
 
-// ------------------------------
-// Composant principal
-// ------------------------------
+// ------------------------------ utils divers
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function normalizeUrl(u: string) {
+  try {
+    const url = new URL(u.trim(), window.location.origin);
+    return url.toString();
+  } catch {
+    return '';
+  }
+}
+
+// ------------------------------ Composant principal
 const ParcelleNew: React.FC = () => {
   const navigate = useNavigate();
   const [user] = useAuthState(auth);
@@ -188,6 +191,11 @@ const ParcelleNew: React.FC = () => {
   const [progress, setProgress] = useState(0);
   const [status, setStatus] = useState<JobStatus | null>(null);
   const [overlays, setOverlays] = useState<FeatureOverlay[]>([]);
+
+  // -------- Overlay HTML (à la racine du dépôt)
+  const defaultHtmlUrl = `${window.location.origin}/index.html`; // ← racine du déploiement (Netlify/Vercel/GH Pages)
+  const [iframeUrl, setIframeUrl] = useState<string>(defaultHtmlUrl);
+  const [showIframe, setShowIframe] = useState<boolean>(false);
 
   const center = useMemo(() => ({ lat, lng: lon }), [lat, lon]);
   const onLoad = useCallback((map: L.Map) => (mapRef.current = map), []);
@@ -249,17 +257,14 @@ const ParcelleNew: React.FC = () => {
       setProgress(0);
       setStatus('queued');
 
-      // Lance la séquence "POST → status → result"
       const { featureCollection } = await runSoilJobCurlFlow(lat, lon, radiusKm);
 
-      // (Optionnel) proposer le téléchargement du GeoJSON
+      // (Optionnel) téléchargement
       // downloadJSON(featureCollection, "result.geojson");
 
-      // Convertir en overlays Leaflet
       const feats = fcToOverlays(featureCollection);
       setOverlays(feats);
 
-      // Fit bounds sur les résultats
       const map = mapRef.current;
       if (map && feats.length) {
         const b = L.latLngBounds([]);
@@ -277,7 +282,7 @@ const ParcelleNew: React.FC = () => {
 
   // ------------------- Sélection d’un polygone (pour sauvegarde)
   const selectOverlay = (ov: FeatureOverlay) => {
-    // MultiPolygon -> Polygon (on prend le premier anneau) pour simplifier l’enregistrement
+    // MultiPolygon -> Polygon (on prend le premier anneau)
     let poly: GeoJSON.Feature<GeoJSON.Polygon>;
     if (ov.feature.geometry.type === 'Polygon') {
       poly = ov.feature as GeoJSON.Feature<GeoJSON.Polygon>;
@@ -398,7 +403,7 @@ const ParcelleNew: React.FC = () => {
                       <Input id="lat" type="number" step="any" value={lat} onChange={(e) => setLat(parseFloat(e.target.value))} required />
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="lon">Lonitude</Label>
+                      <Label htmlFor="lon">Longitude</Label>
                       <Input id="lon" type="number" step="any" value={lon} onChange={(e) => setLon(parseFloat(e.target.value))} required />
                     </div>
                   </div>
@@ -442,12 +447,35 @@ const ParcelleNew: React.FC = () => {
           {/* Carte + Analyse */}
           <Card className="overflow-hidden">
             <CardHeader className="pb-2">
-              <div className="flex items-center justify-between gap-3">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                 <div>
                   <CardTitle>Carte & analyse</CardTitle>
                   <CardDescription>Analyse en 3 masques : sol nu, culture, forêt.</CardDescription>
                 </div>
-                <Button onClick={runAnalysis}>Analyser</Button>
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                  <div className="flex items-center gap-2">
+                    <Globe className="h-4 w-4 text-muted-foreground" />
+                    <Input
+                      placeholder="URL HTML (ex: /index.html)"
+                      value={iframeUrl}
+                      onChange={(e) => setIframeUrl(e.target.value)}
+                      className="w-[320px]"
+                    />
+                  </div>
+                  <Button
+                    type="button"
+                    variant={showIframe ? "secondary" : "default"}
+                    onClick={() => {
+                      const u = normalizeUrl(iframeUrl);
+                      if (!u) { setError("URL invalide"); return; }
+                      setError('');
+                      setShowIframe(v => !v);
+                    }}
+                  >
+                    {showIframe ? "Masquer HTML" : "Afficher HTML"}
+                  </Button>
+                  <Button onClick={runAnalysis}>Analyser</Button>
+                </div>
               </div>
             </CardHeader>
 
@@ -462,8 +490,8 @@ const ParcelleNew: React.FC = () => {
                 ))}
               </div>
 
-              {/* Carte */}
-              <div className="h-[520px] w-full rounded-xl overflow-hidden border">
+              {/* Carte + iFrame overlay */}
+              <div className="relative h-[520px] w-full rounded-xl overflow-hidden border">
                 <MapContainer
                   whenCreated={(m) => (mapRef.current = m)}
                   onUnmount={() => (mapRef.current = null)}
@@ -495,6 +523,27 @@ const ParcelleNew: React.FC = () => {
 
                   <FitBounds polygons={overlays.map(o => o.paths)} />
                 </MapContainer>
+
+                {/* Overlay iFrame : sert /index.html (racine du dépôt) */}
+                {showIframe && iframeUrl && (
+                  <div
+                    className="absolute inset-0"
+                    style={{
+                      zIndex: 500,
+                      border: 'none',
+                      pointerEvents: 'auto',
+                      background: '#fff'
+                    }}
+                  >
+                    <iframe
+                      title="Folium HTML"
+                      src={normalizeUrl(iframeUrl)}
+                      style={{ width: '100%', height: '100%', border: 'none' }}
+                      // si ta page contient des scripts, garde same-origin autorisé
+                      sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
+                    />
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -505,8 +554,3 @@ const ParcelleNew: React.FC = () => {
 };
 
 export default ParcelleNew;
-
-// ------------------------------ utils
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
-}
