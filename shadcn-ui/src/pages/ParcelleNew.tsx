@@ -26,26 +26,33 @@ type ZoneClass = 'bare_soil' | 'crop' | 'forest' | 'unknown';
 type FeatureOverlay = {
   id: string;
   cls: ZoneClass;
-  // anneaux (chaque anneau = tableau de lat/lng)
-  paths: Array<Array<{ lat: number; lng: number }>>;
-  // GeoJSON d'origine
-  feature: GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon>;
+  paths: Array<Array<{ lat: number; lng: number }>>; // anneaux (chaque anneau = tableau de lat/lng)
+  feature: GeoJSON.Feature<GeoJSON.Polygon | GeoJSON.MultiPolygon>; // GeoJSON d'origine
 };
 
 type JobStatus = 'queued' | 'running' | 'done' | 'failed';
 
-// 👉 FRONT -> API PYTHON
-const USE_MOCK = false; // mets à true si tu veux tester sans backend
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
+// 👉 FRONT -> API (2 modes)
+// - Par défaut: RELATIF '/api' (recommandé avec proxy Netlify sur le site Front)
+// - Alternative: VITE_API_BASE = 'https://mon-api.netlify.app/.netlify/functions/api'
+const USE_MOCK = false;
+const API_BASE = (import.meta.env.VITE_API_BASE as string) || '/api';
+
+// Helper pour construire les URLs d’API proprement, quel que soit API_BASE
+function apiUrl(path: string) {
+  const base = API_BASE.endsWith('/') ? API_BASE.slice(0, -1) : API_BASE;
+  const p = path.startsWith('/') ? path : `/${path}`;
+  return `${base}${p}`;
+}
 
 // N'afficher que ces 3 classes
 const ALLOWED: ZoneClass[] = ['bare_soil', 'crop', 'forest'];
 
 // Couleurs des 3 classes
 const classColors: Record<ZoneClass, string> = {
-  bare_soil: '#D2B48C', // sol nu (tan)
-  crop: '#00A000',      // culture (vert)
-  forest: '#006400',    // forêt (vert foncé)
+  bare_soil: '#D2B48C',
+  crop: '#00A000',
+  forest: '#006400',
   unknown: '#9e9e9e'
 };
 
@@ -146,10 +153,10 @@ const ParcelleNew: React.FC = () => {
   // ------------------- API (backend Python) -------------------
   async function startJobAPI(_lat: number, _lon: number, _radiusKm: number): Promise<{ jobId: string }> {
     if (USE_MOCK) { return { jobId: 'mock' }; }
-    const res = await fetch(`${API_BASE}/api/soil-segmentation`, {
+    const res = await fetch(apiUrl('/soil-segmentation'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lat: _lat, lng: _lon, radius_km: _radiusKm })
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ lat: _lat, lng: _lon, radius_km: _radiusKm }),
     });
     if (!res.ok) throw new Error(await res.text());
     return res.json();
@@ -157,16 +164,28 @@ const ParcelleNew: React.FC = () => {
 
   async function pollStatusAPI(jobId: string): Promise<JobStatus> {
     if (USE_MOCK) { setProgress(100); return 'done'; }
-    const res = await fetch(`${API_BASE}/api/soil-segmentation/${encodeURIComponent(jobId)}/status`);
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
-    setProgress(data.progress ?? 100);
-    return data.status as JobStatus;
+
+    // Boucle de polling jusqu’à 90s environ
+    let attempts = 0;
+    while (attempts < 60) {
+      const res = await fetch(apiUrl(`/soil-segmentation/${encodeURIComponent(jobId)}/status`), {
+        headers: { 'Accept': 'application/json' }
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json() as { status: JobStatus; progress?: number };
+      setProgress(typeof data.progress === 'number' ? data.progress : (attempts * (100 / 60)));
+      if (data.status === 'done' || data.status === 'failed') return data.status;
+      attempts += 1;
+      await sleep(1500);
+    }
+    throw new Error('Timeout sur le traitement côté API.');
   }
 
   async function getResultAPI(jobId: string): Promise<GeoJSON.FeatureCollection> {
     if (USE_MOCK) { return { type: 'FeatureCollection', features: [] } as any; }
-    const res = await fetch(`${API_BASE}/api/soil-segmentation/${encodeURIComponent(jobId)}/result`);
+    const res = await fetch(apiUrl(`/soil-segmentation/${encodeURIComponent(jobId)}/result`), {
+      headers: { 'Accept': 'application/json' }
+    });
     if (!res.ok) throw new Error(await res.text());
     return res.json();
   }
@@ -176,7 +195,7 @@ const ParcelleNew: React.FC = () => {
     const out: FeatureOverlay[] = [];
     for (const f of fc.features) {
       const cls = ((f.properties as any)?.class || 'unknown') as ZoneClass;
-      if (!ALLOWED.includes(cls) || !f.geometry) continue; // ne garder que bare_soil/crop/forest
+      if (!ALLOWED.includes(cls) || !f.geometry) continue;
 
       const id = (f.id as string) || Math.random().toString(36).slice(2);
 
@@ -236,6 +255,7 @@ const ParcelleNew: React.FC = () => {
       poly = ov.feature as GeoJSON.Feature<GeoJSON.Polygon>;
     } else {
       const first = (ov.feature.geometry.coordinates[0] || []) as number[][];
+      // @ts-expect-error turf typings accept number[][]
       poly = turf.polygon([first]) as GeoJSON.Feature<GeoJSON.Polygon>;
     }
     const areaHa = turf.area(poly) / 10_000;
@@ -424,10 +444,9 @@ const ParcelleNew: React.FC = () => {
                   zoom={14}
                   scrollWheelZoom
                 >
-                  {/* Satellite gratuit Esri */}
                   <TileLayer
                     url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
-                    attribution='&copy; Esri, Earthstar Geographics'
+                    attribution="&copy; Esri, Earthstar Geographics"
                   />
 
                   <ClickToMoveCenter onMove={(la, lo) => { setLat(la); setLon(lo); }} />
