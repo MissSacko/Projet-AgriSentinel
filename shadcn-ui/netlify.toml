@@ -1,0 +1,9 @@
+[build]
+  command = "npm run build"   # adapte à ton front
+  publish = "dist"            # "build" pour CRA, etc.
+
+[[redirects]]
+  from = "/api/*"
+  to   = "https://apisent.netlify.app/.netlify/functions/api/:splat"
+  status = 200
+  force  = true
