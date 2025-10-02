@@ -32,14 +32,17 @@ type FeatureOverlay = {
 
 type JobStatus = 'queued' | 'running' | 'done' | 'failed';
 
-// 👉 FRONT -> API (2 modes)
-// - Par défaut: RELATIF '/api' (recommandé avec proxy Netlify sur le site Front)
-// - Alternative: VITE_API_BASE = 'https://mon-api.netlify.app/.netlify/functions/api'
+// 👉 Mode API
+// - Par défaut le front appelle "/api" (Netlify Functions via netlify.toml)
+// - Pour contourner (tests directs sur FastAPI/Swagger), active USE_DIRECT_ABSOLUTE_BASE et mets DIRECT_ABSOLUTE_BASE
+const USE_DIRECT_ABSOLUTE_BASE = true; // ← mets false quand Netlify Functions marche
+const DIRECT_ABSOLUTE_BASE = "https://TON-API"; // ← ex: https://agrosentinel-api.onrailway.app (SANS / final)
+
+// Alternative variable Vite (facultative)
 const USE_MOCK = false;
 const API_BASE = (import.meta.env.VITE_API_BASE as string) || '/api';
 
-
-// Helper pour construire les URLs d’API proprement, quel que soit API_BASE
+// Helper pour construire des URLs relatives sur /api
 function apiUrl(path: string) {
   const base = API_BASE.endsWith('/') ? API_BASE.slice(0, -1) : API_BASE;
   const p = path.startsWith('/') ? path : `/${path}`;
@@ -91,6 +94,70 @@ function ClickToMoveCenter({ onMove }: { onMove: (lat: number, lng: number) => v
     click(e) { onMove(e.latlng.lat, e.latlng.lng); }
   });
   return null;
+}
+
+// ------------------------------ utils HTTP & flux "cURL"
+// fetch JSON avec erreurs explicites
+async function fetchJSON(url: string, init?: RequestInit) {
+  const r = await fetch(url, {
+    headers: { Accept: "application/json", ...(init?.headers || {}) },
+    ...init,
+  });
+  const txt = await r.text();
+  let data: any = undefined;
+  try { data = txt ? JSON.parse(txt) : undefined; } catch { /* ignore parse */ }
+  if (!r.ok) {
+    const msg = `HTTP ${r.status} ${r.statusText} @ ${url} – ${txt || "(no body)"}`;
+    throw new Error(msg);
+  }
+  return data;
+}
+
+/** Séquence "cURL": POST start -> poll status -> GET result */
+async function runSoilJobCurlFlow(lat: number, lng: number, radiusKm: number) {
+  const BASE = USE_DIRECT_ABSOLUTE_BASE
+    ? DIRECT_ABSOLUTE_BASE.replace(/\/+$/, "")
+    : ""; // "" => URLs relatives vers /api/...
+
+  const startUrl  = `${BASE}/api/soil-segmentation`;
+  const startBody = { lat, lng, radius_km: radiusKm };
+
+  const start = await fetchJSON(startUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(startBody),
+  });
+  const jobId = start?.jobId as string;
+  if (!jobId) throw new Error("Pas de jobId renvoyé par l'API");
+
+  const statusUrl = `${BASE}/api/soil-segmentation/${encodeURIComponent(jobId)}/status`;
+  const resultUrl = `${BASE}/api/soil-segmentation/${encodeURIComponent(jobId)}/result`;
+
+  // Polling
+  let tries = 0;
+  while (tries < 120) { // ~3 minutes si 1.5s d'intervalle
+    const s = await fetchJSON(statusUrl);
+    console.log(`⌛ status=${s?.status} progress=${Math.round(s?.progress ?? 0)}%`);
+    if (s?.status === "done") break;
+    if (s?.status === "failed") throw new Error("Job échoué côté API");
+    await sleep(1500);
+    tries++;
+  }
+
+  const fc = await fetchJSON(resultUrl);
+  return { jobId, featureCollection: fc as GeoJSON.FeatureCollection };
+}
+
+/** Téléchargement d’un fichier depuis le navigateur (optionnel) */
+function downloadJSON(obj: any, filename = "result.geojson") {
+  const blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/geo+json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 // ------------------------------
@@ -151,46 +218,6 @@ const ParcelleNew: React.FC = () => {
     setCalculatedArea(areaHa);
   };
 
-  // ------------------- API (backend Python) -------------------
-  async function startJobAPI(_lat: number, _lon: number, _radiusKm: number): Promise<{ jobId: string }> {
-    if (USE_MOCK) { return { jobId: 'mock' }; }
-    const res = await fetch(apiUrl('/soil-segmentation'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: JSON.stringify({ lat: _lat, lng: _lon, radius_km: _radiusKm }),
-    });
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
-  }
-
-  async function pollStatusAPI(jobId: string): Promise<JobStatus> {
-    if (USE_MOCK) { setProgress(100); return 'done'; }
-
-    // Boucle de polling jusqu’à 90s environ
-    let attempts = 0;
-    while (attempts < 60) {
-      const res = await fetch(apiUrl(`/soil-segmentation/${encodeURIComponent(jobId)}/status`), {
-        headers: { 'Accept': 'application/json' }
-      });
-      if (!res.ok) throw new Error(await res.text());
-      const data = await res.json() as { status: JobStatus; progress?: number };
-      setProgress(typeof data.progress === 'number' ? data.progress : (attempts * (100 / 60)));
-      if (data.status === 'done' || data.status === 'failed') return data.status;
-      attempts += 1;
-      await sleep(1500);
-    }
-    throw new Error('Timeout sur le traitement côté API.');
-  }
-
-  async function getResultAPI(jobId: string): Promise<GeoJSON.FeatureCollection> {
-    if (USE_MOCK) { return { type: 'FeatureCollection', features: [] } as any; }
-    const res = await fetch(apiUrl(`/soil-segmentation/${encodeURIComponent(jobId)}/result`), {
-      headers: { 'Accept': 'application/json' }
-    });
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
-  }
-
   // ------------------- Conversion GeoJSON → Overlays Leaflet (3 classes)
   function fcToOverlays(fc: GeoJSON.FeatureCollection): FeatureOverlay[] {
     const out: FeatureOverlay[] = [];
@@ -214,7 +241,7 @@ const ParcelleNew: React.FC = () => {
     return out;
   }
 
-  // ------------------- Action : Analyser
+  // ------------------- Action : Analyser (flux cURL)
   const runAnalysis = async () => {
     try {
       setError('');
@@ -222,14 +249,14 @@ const ParcelleNew: React.FC = () => {
       setProgress(0);
       setStatus('queued');
 
-      const { jobId } = await startJobAPI(lat, lon, radiusKm);
-      setStatus('running');
+      // Lance la séquence "POST → status → result"
+      const { featureCollection } = await runSoilJobCurlFlow(lat, lon, radiusKm);
 
-      const s = await pollStatusAPI(jobId);
-      if (s !== 'done') throw new Error('Analyse non terminée');
+      // (Optionnel) proposer le téléchargement du GeoJSON
+      // downloadJSON(featureCollection, "result.geojson");
 
-      const fc = await getResultAPI(jobId);
-      const feats = fcToOverlays(fc);
+      // Convertir en overlays Leaflet
+      const feats = fcToOverlays(featureCollection);
       setOverlays(feats);
 
       // Fit bounds sur les résultats
